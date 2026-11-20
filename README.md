@@ -16,28 +16,28 @@ Simplified Portuguese energy tariffs:
 
 | Tariff | Description |
 |--------|-------------|
-|Simples |Same price at all hours|
-|Bi-Horária| Two prices: cheaper late night when the demand is lower.|
-|Tri-Horária| Three prices: Similar to Bi-Horária but very expensive around times of highest demand (lunch/dinner); This tariff is mandatory for meters above a certain power rating.|
+|Simples (Simple) |Same price at all hours|
+|Bi-Horária (Two period) | Two prices: cheaper late night when the demand is lower.|
+|Tri-Horária (Three Period) | Three prices: Similar to Bi-Horária but very expensive around times of highest demand (lunch/dinner); This tariff is mandatory for meters above a certain power rating.|
 
 ## Pricing
 
 |Prices of active energy|Time period|€/kWh|
 |-----------------------|-----------|-----|
 |Simples		|-|0.1654|
-|Bi-Horária	|Fora de vazio	|0.1988|
-|Bi-Horária	|Vazio	|0.1087|
-|Tri-Horária	|Ponta	|0.2495|
-|Tri-Horária	|Cheias|	0.1690|
-|Tri-Horária	|Vazio|	0.1087|
+|Bi-Horária	| Standard hours |0.1988|
+|Bi-Horária	| Off-peak |0.1087|
+|Tri-Horária	| Peak |0.2495|
+|Tri-Horária	| Mid-Peak |	0.1690|
+|Tri-Horária	| Off-peak |	0.1087|
 
 ## Time periods
 
-||Vazio	|Fora de vazio|
+|| Off-peak	| Standard hours |
 |-|-----|--------|
 |Bi-Horária	|22:00 às 08:00|	08:00 às 22:00|
 
-||Vazio|	Cheias	|Ponta|
+|| Off-peak | Mid-peak | Peak |
 |-|-----|-----|----|
 |Tri-Horária|	22:00 às 08:00	|08:00 às 10:30	|10:30 às 13:00|
 |||13:00 às 19:30	|19:30 às 21:00|
