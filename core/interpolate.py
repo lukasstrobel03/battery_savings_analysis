@@ -14,7 +14,8 @@ def interpolate_15min(readings):
          .withColumn("mx", F.max("value").over(m.orderBy("ts").rowsBetween(UNB, 0)))
          .filter("value >= mx").drop("mx"))
 
-    # 15-min grid + readings
+    # 15-min grid
+    # # readings
     grid = (r.groupBy("Meter").agg(F.min("ts").alias("a"), F.max("ts").alias("b"))
             .select("Meter", F.explode(F.sequence(
                 F.timestamp_seconds(F.ceil(F.unix_timestamp("a") / 900) * 900),
@@ -23,7 +24,7 @@ def interpolate_15min(readings):
             .withColumn("value", F.lit(None).cast("double")))
     rows = grid.withColumn("is_grid", F.lit(True)).unionByName(r.withColumn("is_grid", F.lit(False)))
 
-   # nearest reading before/after
+   # reading before/after
     fwd = m.orderBy("ts", "is_grid").rowsBetween(UNB, 0)
     bwd = m.orderBy(F.desc("ts"), F.desc("is_grid")).rowsBetween(UNB, 0)
     t = F.when(~F.col("is_grid"), F.col("ts").cast("long"))
@@ -32,7 +33,7 @@ def interpolate_15min(readings):
                        F.last(t, True).over(fwd).alias("tp"), F.last(v, True).over(fwd).alias("vp"),
                        F.last(t, True).over(bwd).alias("tn"), F.last(v, True).over(bwd).alias("vn"))
 
-    # interpolate, then kWh per slot
+    # kWh per slot
     tp, vp, tn, vn = (F.col(c) for c in ("tp", "vp", "tn", "vn"))
     counter = F.when(tn == tp, vp).otherwise(vp + (vn - vp) * (F.col("ts").cast("long") - tp) / (tn - tp))
     c = rows.filter("is_grid").select("Meter", "ts", counter.alias("c"))
@@ -42,7 +43,6 @@ def interpolate_15min(readings):
 
 
 if __name__ == "__main__":
-    # UTC: no time shift
     spark = (SparkSession.builder.appName("Interpolate")
              .config("spark.sql.session.timeZone", "UTC").getOrCreate())
     readings = spark.read.parquet(str(ROOT / "data"))
