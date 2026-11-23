@@ -23,7 +23,9 @@ def customer_features(e):
     kwh, month, period = F.col("kwh"), F.col("month"), F.col("period")
     share = lambda p: F.round(F.sum(F.when(period == p, kwh)) / F.sum(kwh) * 100, 1)
     winter = F.avg(F.when(month.isin(12, 1, 2), kwh))
+    spring = F.avg(F.when(month.isin(3, 4, 5), kwh))
     summer = F.avg(F.when(month.isin(6, 7, 8), kwh))
+    autumn = F.avg(F.when(month.isin(9, 10, 11), kwh))
 
     slots = e.groupBy("Meter").agg(
         F.round(F.sum(kwh)).alias("kwh_year"),
@@ -31,7 +33,9 @@ def customer_features(e):
         share("Medium").alias("Medium_pct"),
         share("Expensive").alias("Expensive_pct"),
         F.round(winter * 96, 2).alias("Winter_kwh_Day"),
+        F.round(spring * 96, 2).alias("Spring_kwh_Day"),
         F.round(summer * 96, 2).alias("Summer_kwh_Day"),
+        F.round(autumn * 96, 2).alias("Autumn_kwh_Day"),
         F.round(F.max(kwh) / F.avg(kwh), 1).alias("Peak_to_Average"),
         F.round(F.max(kwh) * 4, 2).alias("Max_kw"))
 
