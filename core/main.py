@@ -5,107 +5,116 @@ from pyspark.sql import SparkSession, DataFrame, Window
 
 data_path = Path(__file__).parents[1] / "data"
 
+
 def load_dataset() -> DataFrame:
     """Load all the parquet files."""
 
     spark = SparkSession.builder \
         .appName("SPBD Project Analysis") \
         .getOrCreate()
-    
+
     readings = spark.read \
         .parquet(str(data_path))
+    readings = _calculcate_reading_intervals(readings)
+    return _add_tariff_periods(_add_minutes_of_day(readings))
 
 
-    def _calculcate_reading_intervals() -> DataFrame:
-        """Extract the kw that changed after every reading."""
-        INTERVAL = 900 # 15 Minute interval
+def _calculcate_reading_intervals(readings: DataFrame) -> DataFrame:
+    """Extract the kw that changed after every reading."""
+    INTERVAL = 900 # 15 Minute interval in seconds
 
-        raw = readings.select(
-            "Meter",
-            F.col("Date").cast("timestamp").cast("long").alias("time"),
-            F.col("Reading").cast("double").alias("reading"),
+    w_cum = Window.partitionBy("Meter") \
+        .orderBy("time") \
+        .rowsBetween(Window.unboundedPreceding, Window.currentRow)
+    
+    raw = readings.select(
+        "Meter",
+        F.col("Date").cast("timestamp").cast("long").alias("time"),
+        F.col("Reading").cast("double").alias("reading"),
+    ) \
+    .dropna() \
+    .dropDuplicates(["Meter", "time"]) \
+    .withColumn("mx", F.max("reading").over(w_cum)) \
+    .filter(F.col("reading") >= F.col("mx")) \
+    .drop("mx")
+
+    # before = readings.count()
+    # after = raw.count()
+    # print(before - after)
+
+    window = Window.partitionBy("Meter").orderBy("time")
+    segments = raw \
+        .withColumn("t1", F.lead("time").over(window)) \
+        .withColumn("r1", F.lead("reading").over(window)) \
+        .filter(F.col("t1").isNotNull())
+
+    first = F.ceil(F.col("time") / INTERVAL) * INTERVAL
+    last = (F.ceil(F.col("t1") / INTERVAL) - 1) * INTERVAL
+
+    grid = segments \
+        .withColumn("first", first.cast("long")) \
+        .withColumn("last", last.cast("long")) \
+        .filter(F.col("first") <= F.col("last")) \
+        .withColumn("g", F.explode(F.sequence("first", "last", F.lit(INTERVAL)))) \
+        .withColumn(
+            "counter",
+            F.col("reading") + (F.col("r1") - F.col("reading")) * (F.col("g") - F.col("time")) / (F.col("t1") - F.col("time")),
         ) \
-        .dropDuplicates(["Meter", "time"])
+        .select("Meter", "g", "counter")
 
-        window = Window.partitionBy("Meter").orderBy("time")
-        segments = raw \
-            .withColumn("t1", F.lead("time").over(window)) \
-            .withColumn("r1", F.lead("reading").over(window)) \
-            .filter(F.col("t1").isNotNull())
-
-        first = F.ceil(F.col("time") / INTERVAL) * INTERVAL
-        last = (F.ceil(F.col("t1") / INTERVAL) - 1) * INTERVAL
-
-        grid = segments \
-            .withColumn("first", first.cast("long")) \
-            .withColumn("last", last.cast("long")) \
-            .filter(F.col("first") <= F.col("last")) \
-            .withColumn("g", F.explode(F.sequence("first", "last", F.lit(INTERVAL)))) \
-            .withColumn(
-                "counter",
-                F.col("reading") + (F.col("r1") - F.col("reading")) * (F.col("g") - F.col("time")) / (F.col("t1") - F.col("time")),
-            ) \
-            .select("Meter", "g", "counter")
-
-        wg = Window.partitionBy("Meter").orderBy("g")
-
-        intervals = grid \
-            .withColumn("next_g", F.lead("g").over(wg)) \
-            .withColumn("next_counter", F.lead("counter").over(wg)) \
-            .filter(F.col("next_g") - F.col("g") == INTERVAL) \
-            .withColumn("kwh", F.col("next_counter") - F.col("counter")) \
-            .withColumn("interval_start", F.timestamp_seconds("g")) \
-            .select("Meter", "interval_start", "kwh")
-        
-        return intervals
+    wg = Window.partitionBy("Meter").orderBy("g")
+    intervals = grid \
+        .withColumn("next_g", F.lead("g").over(wg)) \
+        .withColumn("next_counter", F.lead("counter").over(wg)) \
+        .filter(F.col("next_g") - F.col("g") == INTERVAL) \
+        .withColumn("kwh", F.col("next_counter") - F.col("counter")) \
+        .withColumn("interval_start", F.timestamp_seconds("g")) \
+        .select("Meter", "interval_start", "kwh")   
+    return intervals
 
 
-    readings = _calculcate_reading_intervals()
+def _add_minutes_of_day(readings: DataFrame) -> DataFrame:  
+    return readings \
+        .withColumn(
+            "minute_of_day", 
+            F.hour("interval_start") * 60 + F.minute("interval_start")
+        )
 
-    def _add_minutes_of_day() -> DataFrame:  
-        return readings \
-            .withColumn(
-                "minute_of_day", 
-                F.hour("interval_start") * 60 + F.minute("interval_start")
-            )
 
-    def _add_tariff_periods(readings: DataFrame) -> DataFrame:
-        """Add the tariff periods."""
-        min_of_day = F.col("minute_of_day")
+def _add_tariff_periods(readings: DataFrame) -> DataFrame:
+    """Add the tariff periods."""
+    min_of_day = F.col("minute_of_day")
 
-        # 10 * 60 + 30 correlates to 10:30,
-        # 8 * 60 to 8:00
-        # 22 * 60 to 22:00
-        readings = readings \
-            .withColumn(
-                "trio_period", 
-                F.when((min_of_day >= 22 * 60) | (min_of_day < 8 * 60), "off-peak")
-                .when(((min_of_day >= 10 * 60 + 30) & (min_of_day < 13 * 60)) | ((min_of_day >= 19 * 60 + 30) & (min_of_day < 22 * 60)), "peak")
-                .otherwise("mid-peak")
-            ) \
-            .withColumn(
-                "trio_price",
-                F.when(F.col("trio_period") == "off-peak", 0.1087)
-                .when(F.col("trio_period") == "mid-peak", 0.1690)
-                .otherwise(0.2495)
-            ) \
-            .withColumn(
-                "bi_period",
-                F.when((min_of_day >= 22 * 60) | (min_of_day <= 8 * 60), "off-peak")
-                .otherwise("standard_hours")
-            ) \
-            .withColumn(
-                "bi_price",
-                F.when(F.col("bi_period") == "off-peak", 0.1087)
-                .otherwise(0.1988)
-            ) \
-            .withColumn("standard_period", F.lit("standard")) \
-            .withColumn("standard_price", F.lit(0.1654))
-        return readings
-    
-    return _add_tariff_periods(_add_minutes_of_day())
+    # 10 * 60 + 30 correlates to 10:30,
+    # 8 * 60 to 8:00 and so on
+    readings = readings \
+        .withColumn(
+            "trio_period", 
+            F.when((min_of_day >= 22 * 60) | (min_of_day < 8 * 60), "off-peak")
+            .when(((min_of_day >= 10 * 60 + 30) & (min_of_day < 13 * 60)) | ((min_of_day >= 19 * 60 + 30) & (min_of_day < 22 * 60)), "peak")
+            .otherwise("mid-peak")
+        ) \
+        .withColumn(
+            "trio_price",
+            F.when(F.col("trio_period") == "off-peak", 0.1087)
+            .when(F.col("trio_period") == "mid-peak", 0.1690)
+            .otherwise(0.2495)
+        ) \
+        .withColumn(
+            "bi_period",
+            F.when((min_of_day >= 22 * 60) | (min_of_day <= 8 * 60), "off-peak")
+            .otherwise("standard_hours")
+        ) \
+        .withColumn(
+            "bi_price",
+            F.when(F.col("bi_period") == "off-peak", 0.1087)
+            .otherwise(0.1988)
+        ) \
+        .withColumn("standard_period", F.lit("standard")) \
+        .withColumn("standard_price", F.lit(0.1654))
+    return readings
 
-    
+
 def calculate_baseline_prices(readings: DataFrame) -> DataFrame:
     """Calculate the annual cost for all electricity plans."""
     readings = readings \
