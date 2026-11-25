@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import pyspark.sql.functions as F
 
 from pathlib import Path
@@ -139,17 +140,104 @@ def calculate_baseline_prices(readings: DataFrame) -> DataFrame:
 
 def characterize_consumption_patterns(readings: DataFrame) -> DataFrame:
     """Characterize the specific consumption patterns of each customer."""
+    e = readings \
+        .withColumn("date", F.to_date("interval_start")) \
+        .withColumn("month", F.month("interval_start"))
 
-    return NotImplemented
+    kwh, month, period = F.col("kwh"), F.col("month"), F.col("trio_period")
+    
+    share = lambda p: F.round(F.sum(F.when(period == p, kwh)) / F.sum(kwh) * 100, 1)
+    season = lambda months: F.avg(F.when(month.isin(*months), kwh))
+
+    slots = e.groupBy("Meter").agg(
+        F.round(F.sum(kwh)).alias("kwh_year"),
+        share("off-peak").alias("Offpeak_pct"),
+        share("mid-peak").alias("Midpeak_pct"),
+        share("peak").alias("Peak_pct"),
+        F.round(season([12, 1, 2]) * 96, 2).alias("Winter_kwh_day"),
+        F.round(season([3, 4, 5]) * 96, 2).alias("Spring_kwh_day"),
+        F.round(season([6, 7, 8]) * 96, 2).alias("Summer_kwh_day"),
+        F.round(season([9, 10, 11]) * 96, 2).alias("Autumn_kwh_day"),
+        F.round(F.max(kwh) / F.avg(kwh), 1).alias("Peak_to_Average"),
+        F.round(F.max(kwh) * 4, 2).alias("Max_kw"),
+    )
+
+    day = e.groupBy("Meter", "date").agg(
+        F.sum(kwh).alias("total"),
+        F.sum(F.when(period != "off-peak", kwh)).alias("not_offpeak"),
+    )
+
+    days = day.groupBy("Meter").agg(
+        F.round(F.avg("total"), 2).alias("kwh_day"),
+        F.round(F.avg("not_offpeak"), 2).alias("Not_offpeak_kwh_day"),
+    )
+
+    return _add_groups(slots.join(days, "Meter")).orderBy("Meter")
+
+
+def _add_groups(features: DataFrame) -> DataFrame:
+    off, peak, kwh = F.col("Offpeak_pct"), F.col("Peak_pct"), F.col("kwh_year")
+
+    timing = F.when(off >= 45, "Night-Heavy") \
+        .when(peak >= 24, "Peak-Heavy") \
+        .otherwise("Mixed")
+    size = F.when(kwh >= 3000, "High") \
+        .when(kwh < 2000, "Low") \
+        .otherwise("Medium")
+    shape = F.when(F.col("Peak_to_Average") >= 18, "Peaky").otherwise("Flat")
+
+    return features \
+        .withColumn("Timing_Group", timing) \
+        .withColumn("Size_Group", size) \
+        .withColumn("Shape_Group", shape)
+
+
+def plot_daily_profiles(readings: DataFrame, path: Path) -> None:
+    """Plot the average daily load curve (kW) for every meter."""
+    prof = readings \
+        .groupBy("Meter", "minute_of_day") \
+        .agg((F.avg("kwh") * 4).alias("kw")) \
+        .orderBy("Meter", "minute_of_day") \
+        .toPandas()
+    prof["hour"] = prof["minute_of_day"] / 60
+
+    meters = sorted(prof["Meter"].unique())
+    cols = 4
+    rows = -(-len(meters) // cols)
+
+    fig, axes = plt.subplots(rows, cols, figsize=(14, 8), sharex=True, sharey=True)
+    for ax, (meter, d) in zip(axes.flat, prof.groupby("Meter")):
+        ax.axvspan(10.5, 13, color="lightgrey")
+        ax.axvspan(19.5, 22, color="lightgrey")
+        ax.plot(d.hour, d.kw)
+        ax.set_title(meter)
+        ax.set_xticks(range(0, 25, 3))
+        ax.tick_params(labelbottom=True, labelleft=True)
+    for ax in list(axes.flat)[len(meters):]:
+        ax.axis("off")
+
+    fig.supxlabel("Time of Day")
+    fig.supylabel("Electricity Used (kW)")
+    fig.suptitle("Average Daily Use of Electricity Per House (grey = peak hours)")
+    fig.tight_layout()
+    fig.savefig(path)
+    print("Saved", path)
+
 
 if __name__ == "__main__":
+    import os 
+    if not os.path.exists(Path(__file__).parents[1] / "output/"):
+        os.mkdir("output")
 
     readings = load_dataset()
     calc_readings = calculate_baseline_prices(readings)
+    calc_readings.show(10, truncate=False)
 
-    # readings.printSchema()
-    #calc_readings.printSchema()
-    # readings.show(5, truncate=False)
+    output_path = Path(__file__).parents[1] / "output"
+    output_path.mkdir(exist_ok=True)
 
-    # IMPORTANT FOR REPORT: all measurements are for the first part of objective 1
-    calc_readings.show(truncate=False)
+    features = characterize_consumption_patterns(readings)
+    features.show(10, truncate=False)
+    features.toPandas().to_csv(output_path / "Customers_Patterns.csv", index=False)
+
+    plot_daily_profiles(readings, output_path / "Customers_Daily_Patterns.png")
