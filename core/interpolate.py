@@ -46,6 +46,17 @@ if __name__ == "__main__":
     spark = (SparkSession.builder.appName("Interpolate")
              .config("spark.sql.session.timeZone", "UTC").getOrCreate())
     readings = spark.read.parquet(str(ROOT / "data"))
+    # calculates missing data
+    w = Window.partitionBy("Meter").orderBy("Date")
+    gap = (F.unix_timestamp("Date") - F.unix_timestamp(F.lag("Date").over(w))) / 60
+    (readings.withColumn("gap_min", gap).groupBy("Meter").agg(
+        F.min("Date").alias("First"),
+        F.max("Date").alias("Last"),
+        F.count("*").alias("Readings"),
+        F.round(F.percentile_approx("gap_min", 0.5), 1).alias("Median gap min"),
+        F.sum((F.col("gap_min") > 60).cast("int")).alias("Gaps > 1hour"),
+        F.round(F.max("gap_min") / 60, 1).alias("Longest gap hour"))
+     .orderBy("Meter").show(truncate=False))
     energy = interpolate_15min(readings)
 
     # check: slot sum = meter total

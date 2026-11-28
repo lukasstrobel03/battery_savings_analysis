@@ -12,6 +12,7 @@ def load_dataset() -> DataFrame:
 
     spark = SparkSession.builder \
         .appName("SPBD Project Analysis") \
+        .config("spark.sql.session.timeZone", "UTC") \
         .getOrCreate()
 
     readings = spark.read \
@@ -90,9 +91,9 @@ def _add_tariff_periods(readings: DataFrame) -> DataFrame:
     # 8 * 60 to 8:00 and so on
     readings = readings \
         .withColumn(
-            "trio_period", 
+            "trio_period",
             F.when((min_of_day >= 22 * 60) | (min_of_day < 8 * 60), "off-peak")
-            .when(((min_of_day >= 10 * 60 + 30) & (min_of_day < 13 * 60)) | ((min_of_day >= 19 * 60 + 30) & (min_of_day < 22 * 60)), "peak")
+            .when(((min_of_day >= 10 * 60 + 30) & (min_of_day < 13 * 60)) | ((min_of_day >= 19 * 60 + 30) & (min_of_day < 21 * 60)), "peak")
             .otherwise("mid-peak")
         ) \
         .withColumn(
@@ -103,7 +104,7 @@ def _add_tariff_periods(readings: DataFrame) -> DataFrame:
         ) \
         .withColumn(
             "bi_period",
-            F.when((min_of_day >= 22 * 60) | (min_of_day <= 8 * 60), "off-peak")
+            F.when((min_of_day >= 22 * 60) | (min_of_day < 8 * 60), "off-peak")
             .otherwise("standard_hours")
         ) \
         .withColumn(
@@ -208,7 +209,7 @@ def plot_daily_profiles(readings: DataFrame, path: Path) -> None:
     fig, axes = plt.subplots(rows, cols, figsize=(14, 8), sharex=True, sharey=True)
     for ax, (meter, d) in zip(axes.flat, prof.groupby("Meter")):
         ax.axvspan(10.5, 13, color="lightgrey")
-        ax.axvspan(19.5, 22, color="lightgrey")
+        ax.axvspan(19.5, 21, color="lightgrey")
         ax.plot(d.hour, d.kw)
         ax.set_title(meter)
         ax.set_xticks(range(0, 25, 3))
